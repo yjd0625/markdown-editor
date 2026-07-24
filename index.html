@@ -33,7 +33,7 @@
     --code-bg:#f6f8fa; --quote-bg:#f6f8fa; --table-head:#f6f8fa;
     --ptheme-fg:#1f2328; --ptheme-muted:#57606a; --ptheme-link:#0969da;
     --ptheme-accent:#0969da; --ptheme-quote-border:#d0d7de;
-    --preview-font-size:16px; --preview-max-width:880px;
+    --preview-font-size:14px; --preview-max-width:880px;
   }
   [data-ptheme="newspaper"]{
     --card:#fdfaf3; --card-bg:#eceae0; --card-border:#e3d9c0;
@@ -72,7 +72,7 @@
     --ptheme-link: #cf6fa6;
     --ptheme-accent: #e888b8;
     --ptheme-quote-border: #e6d3e6;
-    --preview-font-size:16px; --preview-max-width:880px;
+    --preview-font-size:14px; --preview-max-width:880px;
   }
 
   /* 深色渲染主题 */
@@ -1281,33 +1281,55 @@ function syncPreviewFromEditor(){
   if (!syncOn || syncing) return;
   syncing = true;
   const info = editor.getScrollInfo();
-  // 编辑器已滚到最底部：直接把预览对齐到最底部，避免最后一段/末行对不上。
-  if (info.top + info.clientHeight >= info.height - 2){
-    previewPane.scrollTop = previewPane.scrollHeight;
-  } else {
-    const line = editor.lineAtHeight(info.top, 'local');
-    const blocks = preview.querySelectorAll('[data-line]');
-    let target = null;
-    for (const b of blocks){
-      const bl = +b.getAttribute('data-line');
-      if (bl <= line) target = b; else break;
+  const viewH = info.clientHeight;
+  const maxScroll = info.height - viewH;
+  const a = maxScroll > 0 ? Math.min(1, Math.max(0, info.top / maxScroll)) : 0;
+  // 锚定在编辑器视口比例为 a 的那一行（顶部 a=0、中部 a=0.5、底部 a=1），并让它在预览里
+  // 也落在同一比例处：顶部贴顶、底部贴底、中段居中，且两栏永不漂移。
+  const anchorY = info.top + a * viewH;
+  const line = editor.lineAtHeight(anchorY, 'local');
+  const blocks = preview.querySelectorAll('[data-line]');
+  let target = null;
+  for (const b of blocks){
+    const bl = +b.getAttribute('data-line');
+    if (bl <= line) target = b; else break;
+  }
+  if (target){
+    if (info.top + viewH >= info.height - 2){
+      previewPane.scrollTop = previewPane.scrollHeight;   // 滚到最底：吸底，避免末尾对不上
+    } else {
+      const blockH = target.offsetHeight || 0;
+      const pViewH = previewPane.clientHeight;
+      const desiredTopInView = a * Math.max(0, pViewH - blockH);
+      previewPane.scrollTop = Math.max(0, blockTopInPane(target) - desiredTopInView);
     }
-    if (target) previewPane.scrollTop = Math.max(0, blockTopInPane(target) - 10);
   }
   requestAnimationFrame(() => { syncing = false; });
 }
 function syncEditorFromPreview(){
   if (!syncOn || syncing) return;
   syncing = true;
+  const si = editor.getScrollInfo();
   const top = previewPane.scrollTop;
-  const blocks = preview.querySelectorAll('[data-line]');
-  let target = null;
-  for (const b of blocks){
-    if (blockTopInPane(b) <= top + 4) target = b; else break;
-  }
-  if (target){
-    const line = +target.getAttribute('data-line');
-    editor.scrollTo(null, Math.max(0, editor.heightAtLine(line, 'local') - 10));
+  const pViewH = previewPane.clientHeight;
+  const pMax = previewPane.scrollHeight - pViewH;
+  const a = pMax > 0 ? Math.min(1, Math.max(0, top / pMax)) : 0;
+  // 镜像：锚定在预览视口比例为 a 的那一块，让它在编辑器里也落在同一比例处。
+  if (top + pViewH >= previewPane.scrollHeight - 2){
+    editor.scrollTo(null, Math.max(0, si.height - si.clientHeight));
+  } else {
+    const anchorY = top + a * pViewH;
+    const blocks = preview.querySelectorAll('[data-line]');
+    let target = null;
+    for (const b of blocks){
+      if (blockTopInPane(b) <= anchorY + 4) target = b; else break;
+    }
+    if (target){
+      const line = +target.getAttribute('data-line');
+      const lineTop = editor.heightAtLine(line, 'local');
+      const desiredTopInView = a * Math.max(0, si.clientHeight - editor.defaultTextHeight());
+      editor.scrollTo(null, Math.max(0, lineTop - desiredTopInView));
+    }
   }
   requestAnimationFrame(() => { syncing = false; });
 }
@@ -1533,7 +1555,7 @@ function applyPtheme(t){
 $('#selPtheme').addEventListener('change', e => applyPtheme(e.target.value));
 
 // 2. 字号 / 预览宽度（同时作用于编辑器与预览）
-let curFont = 16, curWidth = 880;
+let curFont = 14, curWidth = 880;
 function applyFont(n){
   curFont = Math.max(12, Math.min(28, n | 0));
   document.documentElement.style.setProperty('--preview-font-size', curFont + 'px');
@@ -2096,8 +2118,8 @@ document.addEventListener('keydown', e => {
   try { ptheme = localStorage.getItem('md-ptheme') || 'github'; } catch (e) {}
   applyPtheme(ptheme);
   syncPthemeToTheme();
-  let fsize = 16;
-  try { fsize = parseInt(localStorage.getItem('md-font'), 10) || 16; } catch (e) {}
+  let fsize = 14;
+  try { fsize = parseInt(localStorage.getItem('md-font'), 10) || 14; } catch (e) {}
   applyFont(fsize);
   let pwidth = 0;
   try { pwidth = parseInt(localStorage.getItem('md-width'), 10); if (!(pwidth === 0 || (pwidth >= 600 && pwidth <= 1400))) pwidth = 0; } catch (e) {}
