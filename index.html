@@ -217,9 +217,10 @@
   .preview-pane .markdown-body > *:last-child{ margin-bottom:0; }
 
   .statusbar{
-    padding:5px 12px; font-size:12px; color:var(--muted);
+    display:flex; align-items:center; gap:8px; padding:5px 12px; font-size:12px; color:var(--muted);
     background:var(--panel); border-top:1px solid var(--border);
   }
+  #statusClock{margin-left:auto; font-variant-numeric:tabular-nums; white-space:nowrap;}
 
   /* 标签页栏（功能 7） */
   .tabbar{display:flex; align-items:stretch; gap:2px; padding:6px 10px 0; background:var(--panel); border-bottom:1px solid var(--border); overflow-x:auto;}
@@ -247,6 +248,18 @@
   .find-replace-row{flex-basis:100%; display:flex; gap:6px; align-items:center;}
   .mermaid-block{text-align:center; margin:1.2em 0; overflow:auto;}
   .mermaid-block svg{max-width:100%;}
+
+  /* ===== 周计划表（```plan 围栏渲染） ===== */
+  .plan-table{border:1px solid var(--border); border-radius:10px; overflow:hidden; margin:1.2em 0; width:100%;}
+  .plan-table table{width:100%; border-collapse:collapse; font-size:14px;}
+  .plan-table th,.plan-table td{padding:11px 16px; border-bottom:1px solid var(--border); vertical-align:top; text-align:left;}
+  .plan-table th{color:var(--muted); font-weight:600; background:var(--bg); text-align:center;}
+  .plan-table .plan-wd{white-space:nowrap; font-weight:500; width:1%;}
+  .plan-table .plan-date{white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums; width:1%;}
+  .plan-table .plan-body{width:100%; color:var(--ptheme-fg);}
+  .plan-table tr:last-child td{border-bottom:0;}
+  .plan-table tbody tr.plan-today{background:rgba(56,139,253,.14);}
+  .plan-table tbody tr.plan-today .plan-date{color:var(--accent); font-weight:700;}
 
   /* 编辑器深色模式（不依赖外部主题文件） */
   [data-theme="dark"] .CodeMirror{ background:#0d1117; color:#e6edf3; border-color:#30363d; }
@@ -428,7 +441,7 @@
     </div>
   </div>
 
-  <div class="statusbar" id="status">未命名</div>
+  <div class="statusbar" id="status"><span id="statusLeft">未命名</span><span id="statusClock">本地 ---- --:--</span></div>
 </div>
 
 <!-- 依赖脚本 -->
@@ -500,6 +513,22 @@ graph TD
 | 代码高亮 | ✅ |
 | 导出 PDF / HTML | ✅ |
 
+## 周计划表
+
+用 \`\`\`plan 围栏写「日期 计划」，每行一条，**日期需手动输入**，星期由日期自动推算；当天（本地时钟）那一行会自动变色高亮。
+
+\`\`\`plan
+07/20 写周报
+07/21 需求评审
+07/22 联调测试
+07/23 发布上线
+07/24 技术分享
+07/25 周报汇总
+07/26 休息
+\`\`\`
+
+> 小提示：状态栏最右侧会显示当前**本地时间**，随系统时钟每分钟刷新。
+
 ## 锚点跳转
 
 在本页正文里写 [回到顶部](#markdown-编辑器) 这样的链接，点击会在预览区内平滑滚动。
@@ -510,10 +539,10 @@ graph TD
 const $ = sel => document.querySelector(sel);
 const preview = $('#preview');
 const fileInput = $('#fileInput');
-const statusEl = $('#status');
+const statusLeftEl = document.getElementById('statusLeft');
 
 if (typeof CodeMirror === 'undefined' || typeof window.markdownit === 'undefined' || typeof window.hljs === 'undefined') {
-  preview.innerHTML = '<p style="color:#cf222e;font-family:sans-serif;padding:16px">依赖库未加载：请确认 <code>vendor/</code> 文件夹与 <code>markdown-editor.html</code> 位于同一目录后再打开。</p>';
+  preview.innerHTML = '<p style="color:#cf222e;font-family:sans-serif;padding:16px">依赖库未加载：请确认 <code>vendor/</code> 文件夹与 <code>index.html</code> 位于同一目录后再打开。</p>';
   throw new Error('libs missing');
 }
 
@@ -527,6 +556,87 @@ const md = window.markdownit({
     return open + md.utils.escapeHtml(str) + '</code></pre>';
   }
 });
+
+// ===== 周计划表：```plan 围栏渲染成「每天的计划表」 =====
+// 格式：每行「日期 计划」，日期由人工输入（不自动生成），星期由日期推算。
+//   支持 M/D、MM/DD、YYYY-MM-DD、YYYY/MM/DD；行首可带「周X」前缀（被忽略，星期以日期为准）。
+//   当天（本地时钟）那一行自动变色高亮（不加文字标签）。
+function planEscape(s){
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+const PLAN_WD = ['周一','周二','周三','周四','周五','周六','周日'];
+function planNorm(dateRaw){
+  const p = String(dateRaw).split(/[-/]/).map(Number);
+  let y, mo, da;
+  if (p.length === 3){ y = p[0]; mo = p[1]; da = p[2]; }
+  else if (p.length === 2){ y = new Date().getFullYear(); mo = p[0]; da = p[1]; }
+  else return null;
+  if (!(mo >= 1 && mo <= 12 && da >= 1 && da <= 31)) return null;
+  const dt = new Date(y, mo - 1, da);
+  if (isNaN(dt.getTime())) return null;
+  return y + '-' + String(mo).padStart(2,'0') + '-' + String(da).padStart(2,'0');
+}
+function planFmt(dateRaw){
+  const p = String(dateRaw).split(/[-/]/).map(Number);
+  if (p.length === 3) return p[0] + '/' + p[1] + '/' + p[2];
+  return p[0] + '/' + p[1];
+}
+function planInner(src){
+  const today = new Date();
+  const todayStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+  const rows = [];
+  const lines = (src || '').split(/\r?\n/);
+  for (let raw of lines){
+    const line = raw.trim();
+    if (!line) continue;
+    let rest = line;
+    const wm = rest.match(/^(周[一二三四五六日天]|星期[一二三四五六日天])\s+(.*)$/);
+    if (wm) rest = wm[2];
+    const dm = rest.match(/^(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s+(.*)$/);
+    if (!dm) continue;                       // 无日期的行忽略（日期需人工输入）
+    const dateRaw = dm[1];
+    const plan = dm[2].trim();
+    const norm = planNorm(dateRaw);
+    if (!norm) continue;
+    const dt = new Date(norm + 'T00:00:00');
+    const wd = PLAN_WD[(dt.getDay() + 6) % 7];
+    const isToday = norm === todayStr;
+    rows.push('<tr class="plan-row' + (isToday ? ' plan-today' : '') + '">'
+      + '<td class="plan-wd">' + wd + '</td>'
+      + '<td class="plan-date">' + planFmt(dateRaw) + '</td>'
+      + '<td class="plan-body">' + planEscape(plan) + '</td></tr>');
+  }
+  if (!rows.length) rows.push('<tr><td class="plan-wd">—</td><td class="plan-date">—</td><td class="plan-body">（每行写「日期 计划」，如 <code>07/24 写周报</code>）</td></tr>');
+  return '<table><thead><tr><th class="plan-wd">星期</th><th class="plan-date">日期</th><th class="plan-body">计划</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
+}
+function renderPlanTable(src){
+  return '<div class="plan-table" data-plan="' + planEscape(src) + '">' + planInner(src) + '</div>';
+}
+// 仅对 ```plan 围栏做特殊处理，其余语言（含 ```mermaid）仍走默认渲染
+const _defaultFence = md.renderer.rules.fence || function(tokens, idx, options, env, self){ return self.renderToken(tokens, idx, options); };
+md.renderer.rules.fence = function(tokens, idx, options, env, self){
+  const info = ((tokens[idx].info) || '').trim();
+  if (info === 'plan') return renderPlanTable(tokens[idx].content);
+  return _defaultFence(tokens, idx, options, env, self);
+};
+
+// ===== 本地时间（状态栏时钟）+ 周计划「今天」高亮：共用同一分钟级刷新 =====
+function updateClock(){
+  const el = document.getElementById('statusClock');
+  if (!el) return;
+  const now = new Date();
+  const y = now.getFullYear();
+  const mo = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  el.textContent = '本地 ' + y + '-' + mo + '-' + d + ' ' + hh + ':' + mm;
+}
+function refreshPlanTables(){
+  const els = document.querySelectorAll('.plan-table[data-plan]');
+  els.forEach(el => { const s = el.getAttribute('data-plan'); if (s != null) el.innerHTML = planInner(s); });
+}
+function tick(){ updateClock(); refreshPlanTables(); }
 
 // 行号映射：渲染时记录顶层块级 token 的源码行，渲染后写到 DOM 顶层子元素，
 // 用于"基于行号"的同步滚动精确定位（替代原来按比例映射导致的对不上）。
@@ -574,7 +684,8 @@ const editor = CodeMirror.fromTextArea($('#src'), {
     {name:'分割线',   hint:'--- ',      kw:['hr','fgx'],           text:'--- ', cursor:4},
     {name:'链接',     hint:'[文本](url)', kw:['link','lj','url'],   text:'[文本](url)', sel:[1,3]},
     {name:'图片',     hint:'![alt](url)', kw:['img','tp','image'], text:'![alt](url)', sel:[2,5]},
-    {name:'表格',     hint:'| 列 | 列 |', kw:['table','bg','biaoge'], text:'| 标题 | 标题 |\n| --- | --- |\n|  |  |'}
+    {name:'表格',     hint:'| 列 | 列 |', kw:['table','bg','biaoge'], text:'| 标题 | 标题 |\n| --- | --- |\n|  |  |'},
+    {name:'周计划表', hint:'```plan 日期+计划', kw:['plan','zhou','week','jihua','计划','周计划'], text:'```plan\n07/20 写周报\n07/21 需求评审\n07/22 联调测试\n07/23 发布上线\n07/24 技术分享\n07/25 周报汇总\n07/26 休息\n```'}
   ];
 
   const pal = document.createElement('div');
@@ -803,7 +914,7 @@ function updateStatus(){
   const c = editor.getCursor();
   const total = editor.lineCount();
   const pct = total ? Math.round((c.line + 1) / total * 100) : 0;
-  statusEl.textContent = name + '  ·  中文 ' + cn + ' 字  ·  英文 ' + en + ' 词  ·  约 ' + minutes + ' 分钟  ·  Ln ' + (c.line + 1) + '  Col ' + (c.ch + 1) + '  ·  进度 ' + pct + '%';
+  statusLeftEl.textContent = name + '  ·  中文 ' + cn + ' 字  ·  英文 ' + en + ' 词  ·  约 ' + minutes + ' 分钟  ·  Ln ' + (c.line + 1) + '  Col ' + (c.ch + 1) + '  ·  进度 ' + pct + '%';
 }
 let quotaWarned = false;
 function saveTabs(){
@@ -2005,6 +2116,8 @@ document.addEventListener('keydown', e => {
   resetEditorImageView();
   renderTabs();
   render();
+  tick();                       // 立即同步一次本地时间与周计划「今天」高亮
+  setInterval(tick, 60000);     // 每分钟刷新（跨午夜自动滚动「今天」）
 })();
 </script>
 </body>
