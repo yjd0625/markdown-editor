@@ -247,7 +247,12 @@
   .find-btn:hover{background:var(--btn-hover);}
   .find-replace-row{flex-basis:100%; display:flex; gap:6px; align-items:center;}
   .mermaid-block{text-align:center; margin:1.2em 0; overflow:auto;}
-  .mermaid-block svg{max-width:100%;}
+  .mermaid-block svg{max-width:100%; height:auto;}
+  /* 预览正文行高 1.75 会经继承撑高 mermaid 的 HTML 标签(foreignObject 内的 .nodeLabel/.edgeLabel)，
+     而节点框是 mermaid 按「正常行高」测量绘制的；行高被放大后文字被顶出框外、下侧被裁切。
+     把标签行高还原为 normal(=mermaid 测量时所用)、并放开 foreignObject 溢出，文字即可完整显示。 */
+  .mermaid-block foreignObject{overflow:visible;}
+  .mermaid-block .nodeLabel, .mermaid-block .edgeLabel{line-height:normal;}
 
   /* ===== 周计划表（```plan 围栏渲染） ===== */
   .plan-table{border:1px solid var(--border); border-radius:10px; overflow:hidden; margin:1.2em 0; width:100%;}
@@ -1267,70 +1272,131 @@ editor.on('drop', (cm, event) => {
   }
 });
 
-// 滚动同步（基于行号映射：编辑器顶部可见行 → 预览对应块；反向同理。
-// 替代原来"按比例"映射，解决图片/代码块/Mermaid/公式导致高度不一致时对不上的问题。）
+// 滚动同步（成熟混合方案 = 首行重锚定 + 高块 1:1 子滚动 + 比例底座兜底 + 回环锁，VS Code markdown 预览级）：
+//  · 首行重锚定：每帧取视口顶行，经预览块 data-line 把同一行钉到预览块内相同相对位置，消除高度不一致导致的对不齐；
+//    顶多只滚到块底(Math.min 封顶)，绝不越过下一块 → 两方向都单调、无反向。
+//  · 高块 1:1：长代码块/大图等超过视口高度的块，在块内等比子滚动，两侧同向同滚。
+//  · 比例底座兜底：无锚点块时回退两栏 1:1 线性映射。
+//  · 回环锁：markProg/isProg 忽略程序化滚动回弹，斩断 editor↔preview 双向振荡。
 const previewPane = preview;
 let syncing = false;
+// 程序化滚动标记：本栏刚被同步逻辑驱动过，其后续 scroll 事件应忽略，防止双向回环（表现为反向抖动）。
+function markProg(pane){ pane.__prog = Date.now(); }
+function isProg(pane){ return pane.__prog && (Date.now() - pane.__prog) < 150; }
+const _clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 function blockTopInPane(b){
   const pr = previewPane.getBoundingClientRect();
   const br = b.getBoundingClientRect();
   return br.top - pr.top + previewPane.scrollTop;
 }
+// 取出预览顶层带 data-line 的块
+function planBlocks(){
+  return Array.prototype.slice.call(preview.querySelectorAll('[data-line]'));
+}
+
 function syncPreviewFromEditor(){
-  if (!syncOn || syncing) return;
+  if (!syncOn || isProg(editor)) return;   // 编辑器被程序化驱动引发的滚动，忽略，斩断回环
   syncing = true;
   const info = editor.getScrollInfo();
   const viewH = info.clientHeight;
-  const maxScroll = info.height - viewH;
-  const a = maxScroll > 0 ? Math.min(1, Math.max(0, info.top / maxScroll)) : 0;
-  // 锚定在编辑器视口比例为 a 的那一行（顶部 a=0、中部 a=0.5、底部 a=1），并让它在预览里
-  // 也落在同一比例处：顶部贴顶、底部贴底、中段居中，且两栏永不漂移。
-  const anchorY = info.top + a * viewH;
-  const line = editor.lineAtHeight(anchorY, 'local');
-  const blocks = preview.querySelectorAll('[data-line]');
-  let target = null;
-  for (const b of blocks){
-    const bl = +b.getAttribute('data-line');
-    if (bl <= line) target = b; else break;
+  const pViewH = previewPane.clientHeight;
+  const eMax = Math.max(1, info.height - viewH);
+  const pMax = Math.max(1, previewPane.scrollHeight - pViewH);
+  // 滚到最底：吸底对齐
+  if (info.top + viewH >= info.height - 2){
+    markProg(previewPane);
+    previewPane.scrollTop = previewPane.scrollHeight;
+    requestAnimationFrame(() => { syncing = false; });
+    return;
   }
-  if (target){
-    if (info.top + viewH >= info.height - 2){
-      previewPane.scrollTop = previewPane.scrollHeight;   // 滚到最底：吸底，避免末尾对不上
+  const line = editor.lineAtHeight(info.top, 'local');   // 视口顶对应行 → 首行重锚定
+  const blocks = planBlocks();
+  let target = null, next = null;
+  for (let i = 0; i < blocks.length; i++){
+    const bl = +blocks[i].getAttribute('data-line');
+    if (bl <= line){ target = blocks[i]; if (i + 1 < blocks.length) next = blocks[i + 1]; }
+    else break;
+  }
+  let targetScroll;
+  if (!target){
+    targetScroll = (info.top / eMax) * pMax;             // 无锚点块时退回纯比例底座
+  } else {
+    const L = +target.getAttribute('data-line');
+    const Lnext = next ? (+next.getAttribute('data-line')) : editor.lineCount();
+    const blockTop = blockTopInPane(target);
+    const blockH = target.offsetHeight || 0;
+    const edBlockTop = editor.heightAtLine(L, 'local');
+    const edBlockBot = editor.heightAtLine(Math.min(Lnext, editor.lineCount()), 'local');
+    if (blockH > pViewH){
+      // 高块（长代码块/大图）：视口顶基准，块内 1:1 等比子滚动 → 两侧同向、1:1 一起滚
+      const prog = (edBlockBot > edBlockTop) ? _clamp((info.top - edBlockTop) / (edBlockBot - edBlockTop), 0, 1) : 0;
+      targetScroll = blockTop + prog * (blockH - pViewH);
     } else {
-      const blockH = target.offsetHeight || 0;
-      const pViewH = previewPane.clientHeight;
-      const desiredTopInView = a * Math.max(0, pViewH - blockH);
-      previewPane.scrollTop = Math.max(0, blockTopInPane(target) - desiredTopInView);
+      // 块能放进视口时细分为两种：
+      //  · 源码高度 ≈ 渲染块高（普通段落）：子滚动跟踪同一行(封顶块高，绝不越块) → 无反向；
+      //  · 源码远高于渲染块高（典型：超宽 mermaid 被 max-width 等比缩小，渲染很矮但源码很长）：
+      //    预览无法在该块内滚动，若仍按行跟踪会在源码划到一半就把整块划走 → 钉在视口顶保持可见，
+      //    直到划过源码区、下一块接管才滚走。
+      const edBlockH = edBlockBot - edBlockTop;
+      const k = pViewH / Math.max(1, viewH);
+      if (edBlockH <= blockH){
+        const within = k * (info.top - edBlockTop);
+        targetScroll = blockTop + Math.min(within, blockH);
+      } else {
+        targetScroll = blockTop;   // 钉住：源码划过期间图始终可见
+      }
     }
   }
+  markProg(previewPane);
+  previewPane.scrollTop = Math.max(0, Math.min(pMax, targetScroll));
   requestAnimationFrame(() => { syncing = false; });
 }
 function syncEditorFromPreview(){
-  if (!syncOn || syncing) return;
+  if (!syncOn || isProg(previewPane)) return;  // 预览被程序化驱动引发的滚动，忽略，斩断回环
   syncing = true;
   const si = editor.getScrollInfo();
-  const top = previewPane.scrollTop;
+  const viewH = si.clientHeight;
   const pViewH = previewPane.clientHeight;
-  const pMax = previewPane.scrollHeight - pViewH;
-  const a = pMax > 0 ? Math.min(1, Math.max(0, top / pMax)) : 0;
-  // 镜像：锚定在预览视口比例为 a 的那一块，让它在编辑器里也落在同一比例处。
+  const eMax = Math.max(1, si.height - viewH);
+  const pMax = Math.max(1, previewPane.scrollHeight - pViewH);
+  const top = previewPane.scrollTop;
   if (top + pViewH >= previewPane.scrollHeight - 2){
+    markProg(editor);
     editor.scrollTo(null, Math.max(0, si.height - si.clientHeight));
+    requestAnimationFrame(() => { syncing = false; });
+    return;
+  }
+  const blocks = planBlocks();
+  let target = null, next = null;
+  for (let i = 0; i < blocks.length; i++){
+    if (blockTopInPane(blocks[i]) <= top + 4){ target = blocks[i]; if (i + 1 < blocks.length) next = blocks[i + 1]; }
+    else break;
+  }
+  let y;
+  if (!target){
+    y = (top / pMax) * eMax;                            // 无锚点块时退回纯比例底座
   } else {
-    const anchorY = top + a * pViewH;
-    const blocks = preview.querySelectorAll('[data-line]');
-    let target = null;
-    for (const b of blocks){
-      if (blockTopInPane(b) <= anchorY + 4) target = b; else break;
-    }
-    if (target){
-      const line = +target.getAttribute('data-line');
-      const lineTop = editor.heightAtLine(line, 'local');
-      const desiredTopInView = a * Math.max(0, si.clientHeight - editor.defaultTextHeight());
-      editor.scrollTo(null, Math.max(0, lineTop - desiredTopInView));
+    const L = +target.getAttribute('data-line');
+    const Lnext = next ? (+next.getAttribute('data-line')) : editor.lineCount();
+    const blockTop = blockTopInPane(target);
+    const blockH = target.offsetHeight || 0;
+    const edBlockTop = editor.heightAtLine(L, 'local');
+    const edBlockBot = editor.heightAtLine(Math.min(Lnext, editor.lineCount()), 'local');
+    if (blockH > pViewH){
+      // 高块：视口顶基准，等比映射回编辑器源码行范围内 → 两侧同向、1:1 一起滚
+      const prog = _clamp((top - blockTop) / (blockH - pViewH), 0, 1);
+      y = edBlockTop + prog * (edBlockBot - edBlockTop);
+    } else {
+      // 普通块：首行重锚定的逆运算（与 editor→preview 严格对应，无反向、无漂移）
+      const edBlockH = edBlockBot - edBlockTop;
+      const k = pViewH / Math.max(1, viewH);
+      const dv = (top - blockTop) / Math.max(0.0001, k);
+      y = edBlockTop + Math.min(dv, edBlockH);
     }
   }
+  markProg(editor);
+  editor.scrollTo(null, Math.max(0, Math.min(eMax, y)));
   requestAnimationFrame(() => { syncing = false; });
 }
 editor.on('scroll', syncPreviewFromEditor);
@@ -1538,6 +1604,12 @@ $('#btnSync').addEventListener('click', () => {
   b.title = '同步滚动:' + (syncOn ? '开' : '关');
   b.classList.toggle('active', syncOn);
 });
+// 初始化按钮显示，使其与 syncOn 默认值(true=开)一致（否则首次加载看起来是关的）
+(function(){
+  const b = $('#btnSync');
+  b.title = '同步滚动:' + (syncOn ? '开' : '关');
+  b.classList.toggle('active', syncOn);
+})();
 
 // 渲染主题切换
 const PTHEMES = ['github', 'newspaper', 'mint', 'lavender', 'blossom', 'github-dark', 'dracula'];
