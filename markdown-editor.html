@@ -342,6 +342,10 @@
     .copy-btn{display:none !important;}
     html,body{background:#fff !important; overflow:visible !important;}
   }
+
+  /* 编辑区内联图片预览：用缩略图替代冗长 base64 编码显示（源码文本保持不变） */
+  .cm-inline-img{ max-width:100%; max-height:160px; vertical-align:middle; border-radius:4px; margin:2px 0; display:inline-block; box-shadow:0 0 0 1px rgba(127,127,127,.25); cursor:default; }
+  .cm-inline-img:hover{ box-shadow:0 0 0 2px rgba(232,136,184,.6); }
 </style>
 </head>
 <body>
@@ -722,6 +726,47 @@ function render(){
   // 避免"打字时预览跳回顶部 / 与编辑器错位"。
   if (syncOn) syncPreviewFromEditor();
   syncTocActive();
+  applyEditorImageWidgets();   // 编辑区把冗长 base64 图片以缩略图显示（源码不变）
+}
+// 编辑区内联图片预览：把 ![alt](data:...) / http(s): 链接在编辑区替换成缩略图，
+// 隐藏冗长的 base64 编码；源码文本保持不变（保存仍是完整 .md）。仅作用于 data:/http(s): 链接，
+// 侧车相对路径（方案 B 已很短）与本地相对路径保持原文显示。
+let editorImgMarks = [];
+let lastImgSig = null;
+function clearEditorImageMarks(){ for (const m of editorImgMarks){ try { m.clear(); } catch(e){} } editorImgMarks = []; }
+function resetEditorImageView(){ clearEditorImageMarks(); lastImgSig = null; }
+function collectImageTokens(){
+  const text = editor.getValue();
+  const re = /!\[([^\]]*)\]\(([^)\s]+)\)/g;   // 匹配 ![alt](url)，base64 不含 ) 与空格
+  const tokens = [];
+  let m;
+  while ((m = re.exec(text))){
+    const url = m[2];
+    if (/^(data:|https?:)/i.test(url)) tokens.push({ index:m.index, len:m[0].length, alt:m[1], url });
+  }
+  return tokens;
+}
+function applyEditorImageWidgets(){
+  const tokens = collectImageTokens();
+  const sig = tokens.map(t => t.index + ':' + t.len).join('|');
+  if (sig === lastImgSig) return;            // 图片集合未变化则跳过（避免闪烁与重复开销）
+  lastImgSig = sig;
+  clearEditorImageMarks();
+  const cur = editor.getCursor();
+  for (const t of tokens){
+    const from = editor.posFromIndex(t.index);
+    const to = editor.posFromIndex(t.index + t.len);
+    // 光标若落在图片 token 内部，先移到 token 末尾，避免被原子 widget 困住无法编辑
+    if (cur.line === from.line && cur.ch > from.ch && cur.ch < to.ch) editor.setCursor(to);
+    const img = document.createElement('img');
+    img.src = t.url;
+    img.className = 'cm-inline-img';
+    img.alt = t.alt || '';
+    img.title = (t.alt || 'image') + '\n（双击删除此图片）';
+    const mk = editor.markText(from, to, { replacedWith: img, handleMouseEvents: true });
+    editorImgMarks.push(mk);
+    img.addEventListener('dblclick', () => { const p = mk.find(); if (p) editor.replaceRange('', p.from, p.to); });
+  }
 }
 // 方案 B 预览解析：exe 下，把源码里的相对图片路径（侧车文件）经原生桥接读回为 data URL 显示。
 // 源码仍保留小巧的相对路径（可携）；仅预览临时用 data URL，不写回文件。
@@ -893,6 +938,7 @@ function switchTo(id){
   const cur = activeDoc(); if (cur) cur.content = editor.getValue();
   activeId = id;
   editor.setValue(activeDoc().content || '');
+  resetEditorImageView();
   const td = activeDoc(); if (td) td.dirty = false;
   renderTabs(); saveTabs();
 }
@@ -901,22 +947,22 @@ function closeTab(id){
   if (idx < 0) return;
   docs.splice(idx, 1);
   if (docs.length === 0){ newDoc(); return; }
-  if (id === activeId){ const ni = docs[Math.max(0, idx - 1)]; activeId = ni.id; editor.setValue(ni.content || ''); ni.dirty = false; }
+  if (id === activeId){ const ni = docs[Math.max(0, idx - 1)]; activeId = ni.id; editor.setValue(ni.content || ''); resetEditorImageView(); ni.dirty = false; }
   renderTabs(); saveTabs();
 }
 function newDoc(){
   const d = { id:uid(), name:'未命名 ' + (docs.length + 1), content:'', dirty:false };
-  docs.push(d); activeId = d.id; editor.setValue(''); d.dirty = false;
+  docs.push(d); activeId = d.id; editor.setValue(''); resetEditorImageView(); d.dirty = false;
   renderTabs(); saveTabs();
 }
 function openFileAsDoc(name, content, handle, path){
   const exist = docs.find(d => d.name === name);
   if (exist){
-    activeId = exist.id; editor.setValue(content); exist.content = content; exist.dirty = false; exist.handle = handle || null; exist.path = path || null;
+    activeId = exist.id; editor.setValue(content); resetEditorImageView(); exist.content = content; exist.dirty = false; exist.handle = handle || null; exist.path = path || null;
     renderTabs(); saveTabs(); return;
   }
   const d = { id:uid(), name:name, content:content, dirty:false, handle: handle || null, path: path || null };
-  docs.push(d); activeId = d.id; editor.setValue(content); d.dirty = false;
+  docs.push(d); activeId = d.id; editor.setValue(content); resetEditorImageView(); d.dirty = false;
   renderTabs(); saveTabs();
 }
 
@@ -1956,6 +2002,7 @@ document.addEventListener('keydown', e => {
   loadTabs();
   // 注意：空白文档的 content 是空字符串 ''，必须原样保留（不能用 || DEFAULT_MD，否则会被误当成"无内容"而回落成示例文档）
   editor.setValue(activeDoc().content == null ? DEFAULT_MD : activeDoc().content);
+  resetEditorImageView();
   renderTabs();
   render();
 })();
