@@ -551,14 +551,27 @@ if (typeof CodeMirror === 'undefined' || typeof window.markdownit === 'undefined
   throw new Error('libs missing');
 }
 
+// 代码块高亮缓存：源未变则跳过 hljs.highlight 重算（与 Mermaid/公式同思路）。
+// render() 每次键入都整篇 md.render，未缓存时每个代码块都会被重新高亮，长文档代价明显。
+const hljsCache = new Map();
+const HLJS_CACHE_MAX = 500;
 const md = window.markdownit({
   html: true, linkify: true, typographer: true,
   highlight(str, lang){
+    const key = (lang || '') + ' ' + str;
+    const hit = hljsCache.get(key);
+    if (hit !== undefined) return hit;
     const open = '<pre class="hljs"><code' + (lang ? ' class="language-' + lang + '"' : '') + '>';
+    let html;
     if (lang && window.hljs.getLanguage(lang)) {
-      try { return open + window.hljs.highlight(str, {language: lang, ignoreIllegals: true}).value + '</code></pre>'; } catch (e) {}
+      try { html = open + window.hljs.highlight(str, {language: lang, ignoreIllegals: true}).value + '</code></pre>'; }
+      catch (e) { html = open + md.utils.escapeHtml(str) + '</code></pre>'; }
+    } else {
+      html = open + md.utils.escapeHtml(str) + '</code></pre>';
     }
-    return open + md.utils.escapeHtml(str) + '</code></pre>';
+    if (hljsCache.size >= HLJS_CACHE_MAX) hljsCache.clear();
+    hljsCache.set(key, html);
+    return html;
   }
 });
 
@@ -668,7 +681,15 @@ function applyDataLines(){
 
 const editor = CodeMirror.fromTextArea($('#src'), {
   mode: 'gfm', lineNumbers: true, lineWrapping: true, theme: 'default',
-  extraKeys: { 'Enter': 'newlineAndIndentContinueMarkdownList' }
+  indentUnit: 4, tabSize: 4, indentWithTabs: false, smartIndent: true,
+  extraKeys: {
+    'Enter': 'newlineAndIndentContinueMarkdownList',
+    'Tab': function(cm){
+      if (cm.somethingSelected()) cm.indentSelection('add');
+      else cm.replaceSelection(Array(cm.getOption('indentUnit') + 1).join(' '), 'end');
+    },
+    'Shift-Tab': function(cm){ cm.indentSelection('subtract'); }
+  }
 });
 
 // ===== 格式辅助：/ 与 、（仅行首）触发命令面板 =====
@@ -1087,7 +1108,10 @@ function openFileAsDoc(name, content, handle, path){
 let renderTimer = null;
 function scheduleRender(){
   if (renderTimer) clearTimeout(renderTimer);
-  renderTimer = setTimeout(() => { renderTimer = null; render(); }, 120);
+  // 大文档（>2000 行）拉长防抖，减少整篇重渲染频率；小/中文档保持 120ms 跟手
+  const lines = (editor && editor.lineCount) ? editor.lineCount() : 0;
+  const delay = lines > 2000 ? 250 : 120;
+  renderTimer = setTimeout(() => { renderTimer = null; render(); }, delay);
 }
 editor.on('change', (cm, change) => {
   const d = activeDoc();
@@ -2083,10 +2107,97 @@ function protectInlineMath(root){
     tn.parentNode.replaceChild(frag, tn);
   });
 }
+// 公式渲染缓存：源未变则跳过 KaTeX 重算，直接复用上次渲染的 HTML（与 Mermaid 缓存同思路）。
+// 因为 render() 每次都重建 preview.innerHTML（公式被打回原始 $...$ 文本），这里在 renderMathInElement
+// 之前先按源把已缓存的公式同步注入，剩下的未缓存部分再交给 KaTeX 渲染并写回缓存。
+// protectInlineMath 已将金额 $5 包进 .katex-ignore，故 collectRawMath 扫描时不会误把货币当公式。
+const katexCache = new Map();
+const KATEX_CACHE_MAX = 500;
+function scanMathInText(text){
+  const out = []; let i = 0; const n = text.length;
+  while (i < n){
+    const c = text[i];
+    if (c === '\\'){
+      if (text[i+1] === '$'){ i += 2; continue; }            // 转义 \$：不当作定界符
+      if (text[i+1] === '('){                                  // \( ... \)
+        const end = text.indexOf('\\)', i + 2);
+        if (end === -1){ i += 2; continue; }
+        out.push({ start: i, end: end + 2, src: text.slice(i + 2, end), display: false });
+        i = end + 2; continue;
+      }
+      i++; continue;                                           // 其他转义，原样前进
+    }
+    if (c === '$'){
+      if (text[i+1] === '$'){
+        const e2 = text.indexOf('$$', i + 2);
+        if (e2 === -1){ i++; continue; }
+        out.push({ start: i, end: e2 + 2, src: text.slice(i + 2, e2), display: true });
+        i = e2 + 2; continue;
+      }
+      let j = i + 1;
+      while (j < n){
+        if (text[j] === '\\' && text[j+1] === '$'){ j += 2; continue; }
+        if (text[j] === '$') break;
+        j++;
+      }
+      if (j >= n){ i++; continue; }
+      out.push({ start: i, end: j + 1, src: text.slice(i + 1, j), display: false });
+      i = j + 1; continue;
+    }
+    i++;
+  }
+  return out;
+}
+function collectRawMath(root){
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+  const res = []; let tn;
+  while ((tn = walker.nextNode())){
+    const p = tn.parentNode;
+    if (!p) continue;
+    if (p.closest && (p.closest('pre') || p.closest('code') || p.closest('.katex') || p.closest('.katex-ignore'))) continue;
+    if (!tn.nodeValue || tn.nodeValue.indexOf('$') < 0) continue;
+    const ms = scanMathInText(tn.nodeValue);
+    for (const m of ms) res.push({ node: tn, start: m.start, end: m.end, src: m.src, display: m.display });
+  }
+  return res;
+}
+function replaceRangeHTML(textNode, start, end, html){
+  const range = document.createRange();
+  range.setStart(textNode, start); range.setEnd(textNode, end);
+  range.deleteContents();
+  const tmp = document.createElement('div'); tmp.innerHTML = html;
+  const frag = document.createDocumentFragment();
+  while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+  range.insertNode(frag);
+}
+function wrapRangeHTML(textNode, start, end, span){
+  const range = document.createRange();
+  range.setStart(textNode, start); range.setEnd(textNode, end);
+  range.surroundContents(span);
+}
 function renderMath(){
   if (!window.renderMathInElement){ ensureKatex().then(ok => { if (ok) renderMath(); }).catch(() => {}); return; }
   try {
     protectInlineMath(preview);
+    const raw = collectRawMath(preview);
+    // 按文本节点分组，组内从右到左处理，保证左侧位置在修改后仍有效
+    const byNode = new Map();
+    for (const m of raw){ if (!byNode.has(m.node)) byNode.set(m.node, []); byNode.get(m.node).push(m); }
+    byNode.forEach((list, node) => {
+      list.sort((a, b) => b.start - a.start);
+      for (const m of list){
+        const key = (m.display ? 'D:' : 'I:') + m.src;
+        const cached = katexCache.get(key);
+        if (cached !== undefined){
+          replaceRangeHTML(node, m.start, m.end, cached);
+        } else {
+          const span = document.createElement('span');
+          span.className = 'katex-pending';
+          span.dataset.key = key;
+          wrapRangeHTML(node, m.start, m.end, span);
+        }
+      }
+    });
     window.renderMathInElement(preview, {
       delimiters: [
         { left: '$$', right: '$$', display: true },
@@ -2096,6 +2207,14 @@ function renderMath(){
       ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
       ignoredClasses: ['katex-ignore']
     });
+    const pendings = preview.querySelectorAll('.katex-pending');
+    for (const sp of pendings){
+      const k2 = sp.dataset.key;
+      if (k2 != null) katexCache.set(k2, sp.innerHTML);
+      while (sp.firstChild) sp.parentNode.insertBefore(sp.firstChild, sp);
+      sp.parentNode.removeChild(sp);
+    }
+    if (katexCache.size > KATEX_CACHE_MAX) katexCache.clear();
   } catch (e) {}
 }
 let mmdTimer = null;
