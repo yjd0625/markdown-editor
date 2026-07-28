@@ -24,6 +24,12 @@
     --panel:#161b22; --border:#30363d; --accent:#2f81f7;
     --btn-bg:#21262d; --btn-hover:#30363d;
   }
+  /* 深色模式：让 markdown 预览（表格斑马纹/代码块底等）跟随编辑器主题，
+     不依赖系统 prefers-color-scheme；并把刺眼的浅色条纹换成低对比深色 */
+  [data-theme="dark"] .markdown-body{
+    --color-canvas-default:#0d1117;
+    --color-canvas-subtle:#141a22;
+  }
 
   /* ===== 预览渲染主题（浅色 + 深色设计感） =====
      默认 = GitHub 风格；其余主题通过 [data-ptheme] 覆盖。
@@ -156,6 +162,9 @@
   .icon-select{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;}
   .icon-select select{font:inherit; font-size:12px; padding:4px 8px; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--fg); cursor:pointer; transition:border-color .15s ease;}
   .icon-select select:hover{border-color:var(--accent);}
+  /* 深色模式：下拉选项原为浏览器默认白底，浅色文字会看不清，这里给选项配深色底浅色字 */
+  [data-theme="dark"] .icon-select select{ background:var(--panel); }
+  [data-theme="dark"] .icon-select select option{ background:var(--panel); color:var(--fg); }
   /* 左侧常用功能（文件/导出）文字按钮，扁平无边框 */
   .tbtn{
     font:inherit; font-size:13px; line-height:1; cursor:pointer;
@@ -263,8 +272,8 @@
   .plan-table .plan-date{white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums; width:1%;}
   .plan-table .plan-body{width:100%; color:var(--ptheme-fg);}
   .plan-table tr:last-child td{border-bottom:0;}
-  .plan-table tbody tr.plan-today{background:rgba(56,139,253,.14);}
-  .plan-table tbody tr.plan-today .plan-date{color:var(--accent); font-weight:700;}
+  .markdown-body .plan-table tbody tr.plan-today,
+  .markdown-body .plan-table tbody tr.plan-today td{background:rgba(56,139,253,.15);}
 
   /* 编辑器深色模式（不依赖外部主题文件） */
   [data-theme="dark"] .CodeMirror{ background:#0d1117; color:#e6edf3; border-color:#30363d; }
@@ -622,7 +631,7 @@ function planInner(src){
     rows.push('<tr class="plan-row' + (isToday ? ' plan-today' : '') + '">'
       + '<td class="plan-wd">' + wd + '</td>'
       + '<td class="plan-date">' + planFmt(dateRaw) + '</td>'
-      + '<td class="plan-body">' + planEscape(plan) + '</td></tr>');
+      + '<td class="plan-body">' + md.renderInline(plan) + '</td></tr>');
   }
   if (!rows.length) rows.push('<tr><td class="plan-wd">—</td><td class="plan-date">—</td><td class="plan-body">（每行写「日期 计划」，如 <code>07/24 写周报</code>）</td></tr>');
   return '<table><thead><tr><th class="plan-wd">星期</th><th class="plan-date">日期</th><th class="plan-body">计划</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
