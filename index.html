@@ -383,7 +383,7 @@
       <button id="btnOpen" class="tbtn" title="打开 (Ctrl/Cmd+O)">打开</button>
       <button id="btnSave" class="tbtn" title="保存 (Ctrl/Cmd+S)">保存</button>
       <button id="btnSaveAs" class="tbtn" title="另存为…">另存为</button>
-      <button id="btnSample" class="tbtn" title="恢复示例文档">示例</button>
+      <button id="btnSample" class="tbtn" title="打开示例文档（新标签页）">示例</button>
     </div>
     <span class="sep"></span>
     <div class="icon-group">
@@ -1729,11 +1729,10 @@ $('#selWidth').addEventListener('change', e => applyWidth(parseInt(e.target.valu
 
 // ===== 新增功能：恢复示例 / 布局切换 / 快捷键帮助 =====
 function loadSample(){
-  if (!window.confirm('恢复为默认示例文档？当前所有打开的文档将被替换（已保存到本机的 .md 文件不受影响）。')) return;
-  try { localStorage.removeItem('md-tabs'); } catch (e) {}
-  docs = [{ id: uid(), name: '示例文档', content: DEFAULT_MD, dirty: false }];
-  activeId = docs[0].id;
-  editor.setValue(DEFAULT_MD);
+  // 打开一个独立的新标签页承载默认示例，不打断/替换已有文档
+  const d = { id: uid(), name: '示例文档', content: DEFAULT_MD, dirty: false };
+  docs.push(d); activeId = d.id;
+  editor.setValue(DEFAULT_MD); resetEditorImageView();
   renderTabs(); saveTabs(); render();
 }
 $('#btnSample').addEventListener('click', loadSample);
