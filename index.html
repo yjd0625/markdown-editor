@@ -268,8 +268,8 @@
   .plan-table table{width:100%; border-collapse:collapse; font-size:14px;}
   .plan-table th,.plan-table td{padding:11px 16px; border-bottom:1px solid var(--border); vertical-align:top; text-align:left;}
   .plan-table th{color:var(--muted); font-weight:600; background:var(--bg); text-align:center;}
-  .plan-table .plan-wd{white-space:nowrap; font-weight:500; width:1%;}
-  .plan-table .plan-date{white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums; width:1%;}
+  .plan-table .plan-wd{white-space:nowrap; font-weight:500; width:1%; vertical-align:middle;}
+  .plan-table .plan-date{white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums; width:1%; vertical-align:middle;}
   .plan-table .plan-body{width:100%; color:var(--ptheme-fg);}
   .plan-table tr:last-child td{border-bottom:0;}
   .markdown-body .plan-table tbody tr.plan-today,
@@ -613,27 +613,40 @@ function planInner(src){
   const todayStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
   const rows = [];
   const lines = (src || '').split(/\r?\n/);
+  let cur = null;   // 当前正在累积的计划项 {dateRaw, wd, isToday, body:[]}
+  function flush(){
+    if (!cur) return;
+    const planHtml = cur.body.filter(s => s).map(s => md.renderInline(s)).join('<br>');
+    rows.push('<tr class="plan-row' + (cur.isToday ? ' plan-today' : '') + '">'
+      + '<td class="plan-wd">' + cur.wd + '</td>'
+      + '<td class="plan-date">' + planFmt(cur.dateRaw) + '</td>'
+      + '<td class="plan-body">' + planHtml + '</td></tr>');
+    cur = null;
+  }
   for (let raw of lines){
     const line = raw.trim();
-    if (!line) continue;
+    if (!line) continue;                       // 空行跳过，但继续累积到当前项
     let rest = line;
     const wm = rest.match(/^(周[一二三四五六日天]|星期[一二三四五六日天])\s+(.*)$/);
     if (wm) rest = wm[2];
-    const dm = rest.match(/^(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s+(.*)$/);
-    if (!dm) continue;                       // 无日期的行忽略（日期需人工输入）
-    const dateRaw = dm[1];
-    const plan = dm[2].trim();
-    const norm = planNorm(dateRaw);
-    if (!norm) continue;
-    const dt = new Date(norm + 'T00:00:00');
-    const wd = PLAN_WD[(dt.getDay() + 6) % 7];
-    const isToday = norm === todayStr;
-    rows.push('<tr class="plan-row' + (isToday ? ' plan-today' : '') + '">'
-      + '<td class="plan-wd">' + wd + '</td>'
-      + '<td class="plan-date">' + planFmt(dateRaw) + '</td>'
-      + '<td class="plan-body">' + md.renderInline(plan) + '</td></tr>');
+    const dm = rest.match(/^(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s*(.*)$/);
+    if (dm){
+      flush();                                 // 遇到新日期行，先结算上一项
+      const dateRaw = dm[1];
+      const first = dm[2].trim();
+      const norm = planNorm(dateRaw);
+      if (!norm) continue;                     // 非法日期：跳过此行（上一项已结算）
+      const dt = new Date(norm + 'T00:00:00');
+      const wd = PLAN_WD[(dt.getDay() + 6) % 7];
+      const isToday = norm === todayStr;
+      cur = { dateRaw: dateRaw, wd: wd, isToday: isToday, body: first ? [first] : [] };
+    } else if (cur){
+      cur.body.push(line);                     // 非日期行：作为当前日期的计划项（回车即换行）
+    }
+    // 既非日期、又无当前项：忽略
   }
-  if (!rows.length) rows.push('<tr><td class="plan-wd">—</td><td class="plan-date">—</td><td class="plan-body">（每行写「日期 计划」，如 <code>07/24 写周报</code>）</td></tr>');
+  flush();
+  if (!rows.length) rows.push('<tr><td class="plan-wd">—</td><td class="plan-date">—</td><td class="plan-body">（以「日期」开头一行，其下每行是该日计划、回车即换行，例如：<br><code>07/24</code><br><code>写周报</code><br><code>写月报</code>）</td></tr>');
   return '<table><thead><tr><th class="plan-wd">星期</th><th class="plan-date">日期</th><th class="plan-body">计划</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
 }
 function renderPlanTable(src){
