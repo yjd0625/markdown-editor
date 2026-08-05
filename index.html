@@ -714,6 +714,15 @@ const editor = CodeMirror.fromTextArea($('#src'), {
   }
 });
 
+// 粘贴/拖入文本里的制表符统一转成 4 个空格，与手敲 Tab（4 空格）行为一致，避免预览里 tab 宽度不一致
+editor.on('beforeChange', function(cm, change){
+  if (change.origin === 'paste' || change.origin === 'drop'){
+    if (change.text.join('\n').indexOf('\t') !== -1){
+      change.update(change.from, change.to, change.text.map(function(line){ return line.replace(/\t/g, '    '); }));
+    }
+  }
+});
+
 // ===== 格式辅助：/ 与 、（仅行首）触发命令面板 =====
 (function(){
   const CMD_ITEMS = [
