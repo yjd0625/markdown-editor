@@ -932,7 +932,7 @@ editor.on('beforeChange', function(cm, change){
     const rIn = tablePicker.querySelector('#tpRows'), cIn = tablePicker.querySelector('#tpCols');
     rIn.addEventListener('input', e => { pickR = tpClamp(e.target.value, 1, 20); tpHi(); tpLabel(); });
     cIn.addEventListener('input', e => { pickC = tpClamp(e.target.value, 1, 20); tpHi(); tpLabel(); });
-    rIn.addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); tpInsert(); } });
+    rIn.addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); cIn.focus(); cIn.select(); } });
     cIn.addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); tpInsert(); } });
     tablePicker.querySelector('#tpInsert').addEventListener('click', tpInsert);
     tablePicker.querySelector('#tpCancel').addEventListener('click', tpClose);
@@ -956,6 +956,8 @@ editor.on('beforeChange', function(cm, change){
     pickerFrom = from; pickerTo = to;
     tablePicker.style.display = 'block';
     tpRender(); tpPos();
+    const r0 = tablePicker.querySelector('#tpRows');   // 弹出即聚焦「行」，选中默认数字便于直接输入
+    if (r0){ r0.focus(); r0.select(); }
   }
   function tpClose(){ tablePicker.style.display = 'none'; pickerFrom = null; pickerTo = null; }
   function tpInsert(){
