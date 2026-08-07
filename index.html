@@ -247,6 +247,8 @@
     background:var(--panel); border-top:1px solid var(--border);
   }
   #statusClock{margin-left:auto; font-variant-numeric:tabular-nums; white-space:nowrap;}
+  #statusWarn{margin-left:10px; color:#9a6700; background:#fff8c5; border:1px solid #d4a72c; border-radius:6px; padding:1px 8px; font-weight:600; white-space:nowrap; cursor:help;}
+  [data-theme="dark"] #statusWarn{color:#f0b400; background:#3a2f00; border-color:#6b5500;}
 
   /* 标签页栏（功能 7） */
   .tabbar{display:flex; align-items:stretch; gap:2px; padding:6px 10px 0; background:var(--panel); border-bottom:1px solid var(--border); overflow-x:auto;}
@@ -472,7 +474,7 @@
     </div>
   </div>
 
-  <div class="statusbar" id="status"><span id="statusLeft">未命名</span><span id="statusClock">本地 ---- --:--</span></div>
+  <div class="statusbar" id="status"><span id="statusLeft">未命名</span><span id="statusWarn" hidden></span><span id="statusClock">本地 ---- --:--</span></div>
 </div>
 
 <!-- 依赖脚本 -->
@@ -1117,32 +1119,48 @@ function updateStatus(){
   statusLeftEl.textContent = name + '  ·  中文 ' + cn + ' 字  ·  英文 ' + en + ' 词  ·  约 ' + minutes + ' 分钟  ·  Ln ' + (c.line + 1) + '  Col ' + (c.ch + 1) + '  ·  进度 ' + pct + '%';
 }
 let quotaWarned = false;
+function setQuotaWarn(on, msg){
+  quotaWarned = on;
+  const el = document.getElementById('statusWarn');
+  if (!el) return;
+  if (on){
+    el.textContent = msg;
+    el.hidden = false;
+    el.title = '本地自动保存已超限：图片因超出浏览器缓存上限已被自动移除，请重新导入图片后再点「保存」导出 .md（文档里的图片占位需替换为实际图片才会保留）。';
+  } else {
+    el.hidden = true;
+    el.textContent = '';
+  }
+}
 function saveTabs(){
   try {
-    const data = docs.map(d => ({ id:d.id, name:d.name, content:d.content, dirty:d.dirty }));
+    const data = docs.map(d => ({ id:d.id, name:d.name, content:d.content, dirty:d.dirty, path:d.path || null }));
     localStorage.setItem('md-tabs', JSON.stringify({ docs: data, active: activeId }));
-    quotaWarned = false;
+    setQuotaWarn(false);
   } catch (e) {
-    // 含超大 base64 图片等大内容可能超出 localStorage 配额（通常约 5MB）
     const isQuota = !!(e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014));
     if (isQuota){
-      // 配额超限时退而求其次：剥离图片数据 URL，只保留文字与标签结构再存一次，
-      // 避免整段丢失（否则刷新后新建的空白标签会回退成示例文档）。图片需点「保存」导出 .md 才保留。
+      // 退而求其次：剥离内嵌图片 data:URL，只保留文字与标签结构再存一次，避免整段丢失（否则刷新回退示例）。
       try {
         const slim = docs.map(d => ({
-          id:d.id, name:d.name, dirty:d.dirty,
+          id:d.id, name:d.name, dirty:d.dirty, path:d.path || null,
           content: (d.content || '').replace(/!\[[^\]]*\]\(data:[^)]*\)/g,
-            '![图片](图片已超出浏览器本地缓存上限，请点「保存」导出 .md 以保留该图片)')
+            '![图片已丢失](图片超出浏览器缓存上限已自动移除，请重新导入该图片后再保存导出md以保留)')
         }));
         localStorage.setItem('md-tabs', JSON.stringify({ docs: slim, active: activeId }));
-        if (!quotaWarned){ quotaWarned = true; showToast('⚠️ 图片过大已超出本地自动保存上限：标签与文字已保留，请点「保存」把含图文档导出为 .md'); }
+        // 虽存了瘦身版，但图片已丢、且仍可能再次超限 → 明确这不是完整备份
+        setQuotaWarn(true, '⚠ 文档过大 · 未完整自动保存');
+        showToast('⚠️ 文档过大：图片已因超出本地缓存上限被移除，请重新导入图片后再点「保存」导出 .md（图片需重新拖入）', 6000);
         return;
-      } catch (e2) {}
+      } catch (e2) {
+        // 连瘦身版都写不进（纯文字也破 ~5MB）→ 文档根本没存进去
+        setQuotaWarn(true, '⚠ 文档过大 · 自动保存失败');
+        showToast('⚠️ 文档过大，本地缓存已写不进去：自动保存失败，刷新将丢失！请立即点「保存」导出 .md', 6000);
+        return;
+      }
     }
-    if (!quotaWarned){
-      quotaWarned = true;
-      showToast('⚠️ 本地存储空间已满，含图片的文档无法自动保存，请及时「保存」导出 .md 备份');
-    }
+    setQuotaWarn(true, '⚠ 本地存储已满');
+    showToast('⚠️ 本地存储空间已满，文档无法自动保存，请点「保存」导出 .md 备份', 6000);
   }
 }
 function saveTabsDebounced(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveTabs, 400); }
@@ -1154,7 +1172,7 @@ function loadTabs(){
       // 兼容旧格式（纯数组）：兼容解析为 docs，active 取首个
       const arr = Array.isArray(parsed) ? parsed : (parsed && parsed.docs);
       if (Array.isArray(arr) && arr.length){
-        docs = arr.map(d => ({ id:d.id || uid(), name:d.name || '未命名', content:d.content || '', dirty:!!d.dirty }));
+        docs = arr.map(d => ({ id:d.id || uid(), name:d.name || '未命名', content:d.content || '', dirty:!!d.dirty, path:d.path || null }));
         const savedActive = Array.isArray(parsed) ? null : (parsed.active || null);
         // 刷新后停留在上次激活的文档
         activeId = (savedActive && docs.some(d => d.id === savedActive)) ? savedActive : docs[0].id;
@@ -1419,11 +1437,36 @@ function insertImageFile(file){
       }
       // 侧车失败（目录无写权限等）则回退内联
     }
-    editor.replaceRange('\n![ ' + alt + ' ](' + reader.result + ')\n', editor.getCursor());
+    const dataUrl = await compressImage(reader.result, 1600, 0.85);
+    editor.replaceRange('\n![ ' + alt + ' ](' + dataUrl + ')\n', editor.getCursor());
     showToast('已插入图片：' + (file.name || 'image'));
   };
   reader.readAsDataURL(file);
 }
+// 图片压缩：拖入/粘贴的图片若尺寸过大，先在浏览器内用 Canvas 缩放到 maxDim 以内、
+// 非透明 PNG 转 JPEG 以显著减小体积，避免超大 base64 内联导致编辑器卡死（script error）与本地存储超限。
+// PNG 保留透明（不填白底）；JPEG/WebP 等不透明格式先填白底再绘制，避免透明区变黑。
+function compressImage(dataUrl, maxDim, quality){
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const w0 = img.naturalWidth || img.width, h0 = img.naturalHeight || img.height;
+      if (w0 <= maxDim && h0 <= maxDim){ resolve(dataUrl); return; }   // 不大则原样返回
+      const scale = Math.min(maxDim / w0, maxDim / h0);
+      const w = Math.max(1, Math.round(w0 * scale)), h = Math.max(1, Math.round(h0 * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      const isPng = /^data:image\/png/i.test(dataUrl);
+      if (!isPng){ ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); }
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(dataUrl);   // 解码失败则原样返回，不阻断插入
+    img.src = dataUrl;
+  });
+}
+
 // 去重：从桌面拖文件进编辑器时，浏览器常同时/相近触发 drop 与一次合成的 paste，
 // 二者都处理图片会插入两份；部分浏览器还会把 paste 延后到 drop 之后，或触发两次 drop。
 // 改按「文件签名(名|字节数|修改时间|类型)」去重，同一文件在窗口期内只插入一次，
@@ -1935,12 +1978,12 @@ function copyText(text, btn){
   }
 }
 
-function showToast(msg){
+function showToast(msg, duration){
   let t = document.getElementById('toast');
   if (!t){ t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); }
   t.textContent = msg; t.classList.add('show');
   clearTimeout(showToast._timer);
-  showToast._timer = setTimeout(() => t.classList.remove('show'), 1600);
+  showToast._timer = setTimeout(() => t.classList.remove('show'), duration || 1600);
 }
 
 // ===== 编辑器内查找 / 替换（自实现，无外部 addon，完全离线）=====
