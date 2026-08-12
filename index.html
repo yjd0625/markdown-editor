@@ -587,6 +587,37 @@ if (typeof CodeMirror === 'undefined' || typeof window.markdownit === 'undefined
 
 // 代码块高亮缓存：源未变则跳过 hljs.highlight 重算（与 Mermaid/公式同思路）。
 // render() 每次键入都整篇 md.render，未缓存时每个代码块都会被重新高亮，长文档代价明显。
+// SimTalk 2.0 代码块高亮（hljs 无内置，手动注册；仅用标准 token 类，自动适配三套主题）
+if (window.hljs && window.hljs.registerLanguage) {
+  window.hljs.registerLanguage('simtalk', function(hljs){
+    return {
+      name: 'SimTalk',
+      keywords: {
+        keyword: 'is do end method return if else elseif then while for loop repeat until break continue var and or not local param',
+        type: 'integer real boolean string time length speed acceleration date datetime object table list stack queue array 货币 重量',
+        built_in: 'self root print printToConsole stop debug assert abs ceil floor round sqrt sin cos tan exp ln log z_uniform z_normal z_negExp z_erlang z_gamma z_beta rand timeToString str_to_time str_to_date currentDateAndTime strLen strCopy strPos to_str str_to_num toUpper toLower to_int to_real',
+        literal: 'true false nil void'
+      },
+      contains: [
+        hljs.C_LINE_COMMENT_MODE,
+        hljs.C_BLOCK_COMMENT_MODE,
+        { className: 'string', begin: '"', end: '"' },
+        hljs.C_NUMBER_MODE,
+        { begin: /\bmethod\s+[A-Za-z_]\w*/, returnBegin: true, contains: [
+            { className: 'keyword', begin: /\bmethod\b/ },
+            { className: 'title.function', begin: /[A-Za-z_]\w*/ }
+          ] },
+        { className: 'title.function', begin: /\.[A-Za-z_]\w*(?=\s*\()/ },
+        { className: 'attr', begin: /\.[A-Za-z_]\w*(?!\s*\()/ },
+        { className: 'title.function', begin: /[A-Za-z_]\w*(?=\s*\()/ },
+        { className: 'variable', begin: /[@?~]/ },
+        { className: 'built_in', begin: /<\.?[A-Za-z_][\w-]*>/ },
+        { className: 'operator', begin: /:=|<>|\/=|<=|>=|==|=|<|>|\+|-|\*|\/|&|\||\^|,|;|→|·/ }
+      ]
+    };
+  });
+}
+
 const hljsCache = new Map();
 const HLJS_CACHE_MAX = 500;
 const md = window.markdownit({
