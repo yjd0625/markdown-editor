@@ -1,0 +1,128 @@
+name: Build Release
+
+# 触发条件：
+#   1. 推送 tag（如 v1.0.0）时自动构建并创建 GitHub Release，把三种格式作为附件上传；
+#   2. 手动在 Actions 页面点击 Run workflow 触发（仅上传构件 artifacts，不创建 Release）。
+# 产出三种分发包：Windows 的 .exe、Linux 的 .deb 与 .AppImage。
+# 说明：本地不再手动打包，统一由本工作流完成。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 供 softprops/action-gh-release 创建 Release 与上传附件
+
+jobs:
+  windows:
+    name: Build Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: pip install -r packager/requirements.txt
+
+      - name: Build with PyInstaller
+        run: python packager/build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarkdownEditor-windows
+          path: packager/dist/MarkdownEditor.exe
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packager/dist/MarkdownEditor.exe
+
+  linux:
+    name: Build Linux (.deb + .AppImage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pywebview 在 Linux 走 GTK + WebKit2GTK 后端，需要系统级运行时与头文件；
+      # 同时装上 dpkg-dev 用于打包 .deb。
+      - name: Install system libraries (GTK + WebKit2GTK) and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-gi python3-gi-cairo \
+            gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
+            libwebkit2gtk-4.1-dev \
+            libgirepository1.0-dev libcairo2-dev pkg-config \
+            dpkg-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: pip install -r packager/requirements.txt
+
+      - name: Build with PyInstaller
+        run: python packager/build.py
+
+      # 准备打包素材：可执行文件 + 图标（图标为占位图，可后续替换为正式图标）
+      - name: Prepare packaging assets
+        run: |
+          mkdir -p pkgstage
+          cp packager/dist/MarkdownEditor pkgstage/MarkdownEditor
+          chmod +x pkgstage/MarkdownEditor
+          cp packager/icon.png pkgstage/icon.png
+
+      # 打包 .deb：DEBIAN/control + 桌面入口 + 图标，最后 dpkg-deb --build
+      # （用 printf 写小文件，避免 YAML 块标量里 heredoc 终止符被缩进导致 bash 解析失败）
+      - name: Build .deb
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [ -z "$VERSION" ] && VERSION="0.0.0"
+          DEBDIR="pkgstage/deb/markdowneditor_${VERSION}_amd64"
+          mkdir -p "$DEBDIR/DEBIAN" "$DEBDIR/usr/bin" "$DEBDIR/usr/share/applications" "$DEBDIR/usr/share/icons/hicolor/256x256/apps"
+          cp pkgstage/MarkdownEditor "$DEBDIR/usr/bin/MarkdownEditor"
+          cp pkgstage/icon.png "$DEBDIR/usr/share/icons/hicolor/256x256/apps/markdown-editor.png"
+          printf '[Desktop Entry]\nName=Markdown Editor\nComment=轻量级单文件 Markdown 编辑器\nExec=MarkdownEditor\nIcon=markdown-editor\nTerminal=false\nType=Application\nCategories=Utility;Office;\n' > "$DEBDIR/usr/share/applications/markdown-editor.desktop"
+          printf 'Package: markdowneditor\nVersion: %s\nSection: utils\nPriority: optional\nArchitecture: amd64\nDepends: python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, libwebkit2gtk-4.1-0\nMaintainer: yjd0625 <noreply@example.com>\nDescription: 轻量级单文件 Markdown 编辑器（WebView 原生窗口）\n 基于 PyInstaller + pywebview 的离线 Markdown 编辑器，支持打开/保存本地 .md 文件。\n' "$VERSION" > "$DEBDIR/DEBIAN/control"
+          dpkg-deb --build "$DEBDIR" "pkgstage/MarkdownEditor_${VERSION}_amd64.deb"
+
+      # 打包 .AppImage：用 AppImageKit 的 appimagetool 把 AppDir 打成单文件便携包
+      - name: Build .AppImage
+        run: |
+          curl -L -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          VERSION="${GITHUB_REF_NAME#v}"
+          [ -z "$VERSION" ] && VERSION="0.0.0"
+          APPIMAGEDIR="pkgstage/AppDir"
+          mkdir -p "$APPIMAGEDIR/usr/bin"
+          cp pkgstage/MarkdownEditor "$APPIMAGEDIR/usr/bin/MarkdownEditor"
+          cp pkgstage/icon.png "$APPIMAGEDIR/markdown-editor.png"
+          printf '#!/bin/bash\nHERE="$(dirname "$(readlink -f "${0}")")"\nexec "$HERE/usr/bin/MarkdownEditor" "$@"\n' > "$APPIMAGEDIR/AppRun"
+          chmod +x "$APPIMAGEDIR/AppRun"
+          printf '[Desktop Entry]\nName=Markdown Editor\nComment=轻量级单文件 Markdown 编辑器\nExec=MarkdownEditor\nIcon=markdown-editor\nTerminal=false\nType=Application\nCategories=Utility;Office;\n' > "$APPIMAGEDIR/markdown-editor.desktop"
+          ./appimagetool --no-appstream "$APPIMAGEDIR" "pkgstage/MarkdownEditor-${VERSION}-x86_64.AppImage"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarkdownEditor-linux
+          path: |
+            pkgstage/*.deb
+            pkgstage/*.AppImage
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pkgstage/*.deb
+            pkgstage/*.AppImage

@@ -1,0 +1,4 @@
+# 构建 MarkdownEditor 单文件可执行文件所需的依赖
+# 由 GitHub Actions（.github/workflows/build-release.yml）在 CI 中安装。
+pyinstaller>=6.0
+pywebview>=5.0

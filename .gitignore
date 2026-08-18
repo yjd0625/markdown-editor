@@ -1,2 +1,5 @@
-packager/
+# 打包源码需要进仓库（供 GitHub Actions 构建），仅忽略本地生成的构建产物
+packager/build/
+packager/dist/
+packager/__pycache__/
 .workbuddy/
