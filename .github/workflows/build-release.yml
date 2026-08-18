@@ -78,33 +78,30 @@ jobs:
       - uses: actions/checkout@v4
 
       # pywebview 在 Linux 走 GTK + WebKit2GTK 后端，需要系统级运行时与头文件；
-      # 同时装上 dpkg-dev 用于打包 .deb。
+      # 同时装上 dpkg-dev 用于打包 .deb、python3-venv/python3-pip 用于构建虚拟环境。
       - name: Install system libraries (GTK + WebKit2GTK) and packaging tools
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            python3-gi python3-gi-cairo \
+            python3-gi python3-gi-cairo python3-venv python3-pip \
             gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
             libwebkit2gtk-4.1-dev \
             libgirepository1.0-dev libcairo2-dev pkg-config \
             dpkg-dev
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install build dependencies
+      # 关键修正：pywebview 的 Linux GTK 后端依赖 PyGObject，但 pip 上没有 manylinux 轮子，
+      # 从源码编译极易因缺 gobject-introspection / g-ir-scanner 而失败（首跑即卡在装依赖）。
+      # 因此不用 setup-python，也不用 pip 装 PyGObject，而是直接用系统 /usr/bin/python3 ——
+      # 它已通过 apt 的 python3-gi 自带 PyGObject。建一个 --system-site-packages 的 venv
+      # 继承系统的 gi，仅往里装 pyinstaller + pywebview，再用该 venv 的 python 跑 build.py。
+      - name: Install build dependencies (system python3 provides PyGObject)
         run: |
-          pip install -r packager/requirements.txt
-          # pywebview 的 Linux GTK 后端依赖 PyGObject，但它只放在 [linux] extra 里，
-          # 裸 `pip install pywebview` 不会自动装；上面 apt 已装好 libgirepository1.0-dev
-          # 等系统头文件，这里补装 Python 绑定，供 PyInstaller --collect-submodules webview
-          # 收集 gtk 后端时 import gi 不报错。（Windows job 不执行此步，避免误装 GTK 头文件）
-          pip install PyGObject
+          python3 -m venv --system-site-packages build-venv
+          build-venv/bin/pip install --upgrade pip
+          build-venv/bin/pip install pyinstaller pywebview
 
       - name: Build with PyInstaller
-        run: python packager/build.py
+        run: build-venv/bin/python packager/build.py
 
       # 准备打包素材：可执行文件 + 图标（图标为占位图，可后续替换为正式图标）
       - name: Prepare packaging assets
