@@ -95,7 +95,13 @@ jobs:
           python-version: '3.12'
 
       - name: Install build dependencies
-        run: pip install -r packager/requirements.txt
+        run: |
+          pip install -r packager/requirements.txt
+          # pywebview 的 Linux GTK 后端依赖 PyGObject，但它只放在 [linux] extra 里，
+          # 裸 `pip install pywebview` 不会自动装；上面 apt 已装好 libgirepository1.0-dev
+          # 等系统头文件，这里补装 Python 绑定，供 PyInstaller --collect-submodules webview
+          # 收集 gtk 后端时 import gi 不报错。（Windows job 不执行此步，避免误装 GTK 头文件）
+          pip install PyGObject
 
       - name: Build with PyInstaller
         run: python packager/build.py
